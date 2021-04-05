@@ -26,6 +26,7 @@ py_library(
         "//personalization/emnist:federated_emnist",
         "//personalization/shared:eval_specs",
         "//personalization/shared:training",
+        "//posterior_averaging/shared:fed_pa_schedule",
         "//utils:training_loop",
         "//utils:utils_impl",
     ],

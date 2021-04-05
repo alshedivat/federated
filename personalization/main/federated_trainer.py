@@ -1,4 +1,4 @@
-# Copyright 2020, Google LLC.
+# Copyright 2021, Maruan Al-Shedivat.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,14 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Runs federated training on various tasks using a generalized form of FedAvg.
-
-Specifically, we create (according to flags) an iterative processes that allows
-for client and server learning rate schedules, as well as various client and
-server optimization methods. For more details on the learning rate scheduling
-and optimization methods, see `utils/optimizer_utils.py`. For details on the
-iterative process, see `utils/fed_avg_schedule.py`.
-"""
+"""Runs federated training on various p13n tasks."""
 
 import collections
 import os.path
@@ -38,6 +31,7 @@ from optimization.stackoverflow_lr import federated_stackoverflow_lr
 from personalization.emnist import federated_emnist
 from personalization.shared import eval_specs
 from personalization.shared import training
+from posterior_averaging.shared import fed_pa_schedule
 from utils import training_loop
 from utils import utils_impl
 
@@ -92,6 +86,32 @@ with utils_impl.record_hparam_flags() as p13n_flags:
                        'The number of epochs used in fine-tuning.')
   flags.DEFINE_integer('finetune_batch_size', 20,
                        'The batch size used in fine-tuning.')
+
+with utils_impl.record_hparam_flags() as fed_pa_flags:
+  # FedPA hyperparameters.
+  flags.DEFINE_integer(
+    'client_mixin_epochs_per_round', 1,
+    'The number of client epochs per federated round used for MCMC mixing.')
+  flags.DEFINE_enum(
+    'client_mixin_check_scheme', 'fixed_epochs', ['fixed_epochs'],
+    'The name of the scheme used for checking whether MCMC has mixed-in:\n'
+    '- fixed_epochs: assumes chains mix-in after a fixed number of epochs.')
+  flags.DEFINE_integer(
+    'client_mixin_check_start_round', 100,
+    'The round number starting which we start checking for MCMC mixin. '
+    'During all rounds before that we assume that clients are not mixed-in, '
+    'i.e., the training is equivalent to FedAvg.')
+  flags.DEFINE_enum(
+    'client_update_delta_scheme', 'posterior_avg',
+    ['simple_avg', 'posterior_avg'],
+    'The name of the scheme used to update weight deltas.')
+  flags.DEFINE_float(
+    'client_shrinkage_rho', 0.1,
+    'The hyperparameter of the shrinkage estimator of the posterior '
+    'covariance matrix.')
+  flags.DEFINE_boolean(
+    'mask_zeros_in_client_updates', False,
+    'Indicates whether to average client deltas with zero masking.')
 
 with utils_impl.record_hparam_flags() as task_flags:
   # Task specification.
@@ -191,6 +211,13 @@ def main(argv):
   client_lr_schedule = optimizer_utils.create_lr_schedule_from_flags('client')
   server_lr_schedule = optimizer_utils.create_lr_schedule_from_flags('server')
 
+  client_mixedin_schedule_fn = fed_pa_schedule.create_mixin_check_fn(
+    name=FLAGS.client_mixin_check_scheme,
+    num_mixin_epochs=FLAGS.client_mixin_epochs_per_round,
+    start_round=FLAGS.client_mixin_check_start_round)
+  client_update_delta_fn = fed_pa_schedule.create_update_delta_fn(
+    name=FLAGS.client_update_delta_scheme, rho=FLAGS.client_shrinkage_rho)
+
   def iterative_process_builder(
       model_fn: Callable[[],
                          tff.learning.Model]) -> tff.templates.IterativeProcess:
@@ -213,23 +240,32 @@ def main(argv):
       # When p13n strategy is finetuning, at training time we don not
       # distinguish between train and test subsets (cf. Reptile).
       def client_dataset_fn(client_dataset_dict):
-        return client_dataset_dict.train_data.concatenate(
-            client_dataset_dict.test_data)
+        # Explicit placement on the CPU avoids TF issue #34112:
+        # https://github.com/tensorflow/tensorflow/issues/34112.
+        with tf.device('/CPU:0'):
+          return client_dataset_dict.test_data.concatenate(
+              client_dataset_dict.train_data)
     else:
       client_dataset_fn = None
 
     return training.build_fed_training_process(
         model_fn=model_fn,
+        client_update_epochs=FLAGS.client_epochs_per_round,
         client_optimizer_fn=client_optimizer_fn,
         client_lr=client_lr_schedule,
         server_optimizer_fn=server_optimizer_fn,
         server_lr=server_lr_schedule,
         client_dataset_fn=client_dataset_fn,
-        client_weight_fn=client_weight_fn)
+        client_mixedin_schedule_fn=client_mixedin_schedule_fn,
+        client_update_delta_fn=client_update_delta_fn,
+        client_weight_fn=client_weight_fn,
+        mask_zeros_in_client_updates=FLAGS.mask_zeros_in_client_updates)
 
   task_spec = training_specs.TaskSpec(
       iterative_process_builder=iterative_process_builder,
-      client_epochs_per_round=FLAGS.client_epochs_per_round,
+      # Since the number of epochs each client makes every round is handled
+      # by the logic in client update functions, here we set it to 1.
+      client_epochs_per_round=1,
       client_batch_size=FLAGS.client_batch_size,
       clients_per_round=FLAGS.clients_per_round,
       client_datasets_random_seed=FLAGS.client_datasets_random_seed)

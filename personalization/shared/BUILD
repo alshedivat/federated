@@ -21,7 +21,7 @@ py_library(
     srcs = ["training.py"],
     srcs_version = "PY3",
     deps = [
-        "//optimization/shared:fed_avg_schedule",
+        "//posterior_averaging/shared:fed_pa_schedule",
     ],
 )
 
