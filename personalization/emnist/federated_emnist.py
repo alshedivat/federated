@@ -95,7 +95,7 @@ def configure_training(task_spec: training_specs.TaskSpec,
         build_train_dataset_from_client_id, iterative_process)
   training_process.get_model_weights = iterative_process.get_model_weights
 
-  # Create a dictionary of two personalization strategies.
+  # Create a dictionary of personalization strategies.
   personalize_fn_dict = collections.OrderedDict()
   personalize_fn_dict['finetuning'] = functools.partial(
       finetuning.build_personalize_fn,
@@ -133,10 +133,21 @@ def configure_training(task_spec: training_specs.TaskSpec,
   test_client_ids_fn = lambda x: list(_test_client_ids_fn(x))
 
   def test_fn(state):
-    client_metrics = evaluate_fn(
-        iterative_process.get_model_weights(state),
-        client_ids_test)
-    return tf.nest.map_structure(np.mean, client_metrics)
+    # Evaluate client in batches to avoid OOM issues.
+    client_metrics = []
+    num_clients_test = len(client_ids_test)
+    progbar = tf.keras.utils.Progbar(num_clients_test,
+                                     unit_name='clients evaluated')
+    for i in range(0, num_clients_test, eval_spec.clients_per_eval):
+      client_ids_batch = client_ids_test[i:i + eval_spec.clients_per_eval]
+      client_metrics_batch = evaluate_fn(
+          iterative_process.get_model_weights(state),
+          client_ids_batch)
+      client_metrics.append(tf.nest.map_structure(np.sum, client_metrics_batch))
+      progbar.update(i)
+    progbar.update(num_clients_test)
+    return tf.nest.map_structure(lambda *x: np.sum(x) / num_clients_test,
+                                 *client_metrics)
 
   def validation_fn(state, round_num):
     client_metrics = evaluate_fn(
