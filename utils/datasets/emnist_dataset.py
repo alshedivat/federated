@@ -14,12 +14,14 @@
 """Library for loading and preprocessing EMNIST training and testing data."""
 
 import collections
-from typing import Tuple
+from typing import List, Optional, Tuple
 
+import numpy as np
 import tensorflow as tf
 import tensorflow_federated as tff
 
 MAX_CLIENT_DATASET_SIZE = 418
+NUM_CLIENTS_P13N_TRAIN = 2500
 
 
 def _reshape_for_digit_recognition(element):
@@ -220,3 +222,83 @@ def get_centralized_datasets(
   emnist_test = test_preprocess_fn(emnist_test)
 
   return emnist_train, emnist_test
+
+
+def get_federated_p13n_datasets(
+    train_client_batch_size: int = 20,
+    test_client_batch_size: int = 100,
+    train_client_epochs_per_round: int = 1,
+    test_client_epochs_per_round: int = 1,
+    train_shuffle_buffer_size: int = MAX_CLIENT_DATASET_SIZE,
+    test_shuffle_buffer_size: int = 1,
+    only_digits: bool = False,
+    emnist_task: str = 'digit_recognition',
+    seed: Optional[int] = None
+) -> Tuple[List[str], List[str], tff.Computation]:
+  """Loads and preprocesses federated EMNIST p13n training and testing sets.
+
+  Args:
+    train_client_batch_size: The batch size for all train clients.
+    test_client_batch_size: The batch size for all test clients.
+    train_client_epochs_per_round: The number of epochs each train client should
+      iterate over their local dataset, via `tf.data.Dataset.repeat`. Must be
+      set to a positive integer.
+    test_client_epochs_per_round: The number of epochs each test client should
+      iterate over their local dataset, via `tf.data.Dataset.repeat`. Must be
+      set to a positive integer.
+    train_shuffle_buffer_size: An integer representing the shuffle buffer size
+      (as in `tf.data.Dataset.shuffle`) for each train client's dataset. By
+      default, this is set to the largest dataset size among all clients. If set
+      to some integer less than or equal to 1, no shuffling occurs.
+    test_shuffle_buffer_size: An integer representing the shuffle buffer size
+      (as in `tf.data.Dataset.shuffle`) for each test client's dataset. If set
+      to some integer less than or equal to 1, no shuffling occurs.
+    only_digits: A boolean representing whether to take the digits-only
+      EMNIST-10 (with only 10 labels) or the full EMNIST-62 dataset with digits
+      and characters (62 labels). If set to True, we use EMNIST-10, otherwise we
+      use EMNIST-62.
+    emnist_task: A string indicating the EMNIST task being performed. Must be
+      one of 'digit_recognition' or 'autoencoder'. If the former, then elements
+      are mapped to tuples of the form (pixels, label), if the latter then
+      elements are mapped to tuples of the form (pixels, pixels).
+    seed: An optional integer for seeding random splitting of the clients into
+      training and test sets.
+
+  Returns:
+    A dict that contains train and test client ids, dataset computation used
+    for federated training and a list of test client datasets.
+  """
+
+  emnist_train, emnist_test = tff.simulation.datasets.emnist.load_data(
+    only_digits=only_digits)
+  client_ids = emnist_train.client_ids
+  assert set(client_ids) == set(emnist_test.client_ids)
+
+  train_preprocess_fn = create_preprocess_fn(
+    num_epochs=train_client_epochs_per_round,
+    batch_size=train_client_batch_size,
+    shuffle_buffer_size=train_shuffle_buffer_size,
+    emnist_task=emnist_task)
+
+  test_preprocess_fn = create_preprocess_fn(
+    num_epochs=test_client_epochs_per_round,
+    batch_size=test_client_batch_size,
+    shuffle_buffer_size=test_shuffle_buffer_size,
+    emnist_task=emnist_task)
+
+  # Split clients into training and test sets.
+  rng = np.random.RandomState(seed=seed)
+  client_ids = list(rng.permutation(client_ids))
+  client_ids_train = client_ids[:NUM_CLIENTS_P13N_TRAIN]
+  client_ids_test = client_ids[NUM_CLIENTS_P13N_TRAIN:]
+
+  @tff.tf_computation(tf.string)
+  def build_dataset_from_client_id(client_id):
+    client_dataset_train = emnist_train.dataset_computation(client_id)
+    client_dataset_test = emnist_test.dataset_computation(client_id)
+    return collections.OrderedDict([
+      ('train_data', train_preprocess_fn(client_dataset_train)),
+      ('test_data', test_preprocess_fn(client_dataset_test)),
+    ])
+
+  return client_ids_train, client_ids_test, build_dataset_from_client_id
