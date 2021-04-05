@@ -53,17 +53,20 @@ def configure_training(task_spec: training_specs.TaskSpec,
   """
   emnist_task = 'digit_recognition'
 
-  client_ids_train, client_ids_test, build_dataset_from_client_id = (
+  (client_ids_train, client_ids_test,
+   build_train_dataset_from_client_id, build_eval_dataset_from_client_id) = (
       emnist_dataset.get_federated_p13n_datasets(
           train_client_batch_size=task_spec.client_batch_size,
-          test_client_batch_size=eval_spec.finetune_batch_size,
+          test_client_batch_size=task_spec.client_batch_size,
           train_client_epochs_per_round=task_spec.client_epochs_per_round,
-          test_client_epochs_per_round=eval_spec.finetune_epochs,
+          finetune_client_epochs=eval_spec.finetune_epochs,
+          finetune_client_batch_size=eval_spec.finetune_batch_size,
           emnist_task=emnist_task,
           seed=eval_spec.eval_random_seed))
 
   input_spec = (
-      build_dataset_from_client_id.type_signature.result.train_data.element)
+      build_train_dataset_from_client_id.
+      type_signature.result.train_data.element)
 
   if model == 'cnn':
     model_builder = functools.partial(
@@ -87,9 +90,9 @@ def configure_training(task_spec: training_specs.TaskSpec,
         metrics=metrics_builder())
 
   iterative_process = task_spec.iterative_process_builder(tff_model_fn)
-  with utils.result_type_is_sequence_hack(build_dataset_from_client_id):
+  with utils.result_type_is_sequence_hack(build_train_dataset_from_client_id):
     training_process = tff.simulation.compose_dataset_computation_with_iterative_process(
-        build_dataset_from_client_id, iterative_process)
+        build_train_dataset_from_client_id, iterative_process)
   training_process.get_model_weights = iterative_process.get_model_weights
 
   # Create a dictionary of two personalization strategies.
@@ -105,9 +108,9 @@ def configure_training(task_spec: training_specs.TaskSpec,
       model_fn=tff_model_fn,
       personalize_fn_dict=personalize_fn_dict,
       baseline_evaluate_fn=evaluation.evaluate_fn)
-  with utils.result_type_is_sequence_hack(build_dataset_from_client_id):
+  with utils.result_type_is_sequence_hack(build_eval_dataset_from_client_id):
     evaluate_fn = tff.simulation.compose_dataset_computation_with_computation(
-        build_dataset_from_client_id, evaluate_fn)
+        build_eval_dataset_from_client_id, evaluate_fn)
 
   # Define client sampling strategy at training time.
   _train_client_ids_fn = tff.simulation.build_uniform_sampling_fn(
