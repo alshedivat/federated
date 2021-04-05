@@ -23,33 +23,32 @@ import tensorflow_federated as tff
 from fedopt_guide import training_loop
 from fedopt_guide.stackoverflow_transformer import transformer_models
 from optimization.shared import keras_metrics
-from utils import training_utils
 from utils.datasets import stackoverflow_word_prediction
 
 
-def run_federated(
-    iterative_process_builder: Callable[..., tff.templates.IterativeProcess],
-    client_epochs_per_round: int,
-    client_batch_size: int,
-    clients_per_round: int,
-    max_elements_per_user: int,
-    total_rounds: int = 3000,
-    vocab_size: int = 10000,
-    num_oov_buckets: int = 1,
-    sequence_length: int = 20,
-    num_validation_examples: int = 10000,
-    dim_embed: int = 96,
-    dim_model: int = 512,
-    dim_hidden: int = 2048,
-    num_heads: int = 8,
-    num_layers: int = 1,
-    max_position_encoding: int = 1000,
-    dropout: float = 0.1,
-    client_datasets_random_seed: Optional[int] = None,
-    experiment_name: str = 'federated_stackoverflow',
-    root_output_dir: str = '/tmp/fedopt_guide',
-    max_val_test_batches: Optional[int] = None,
-    **kwargs) -> None:
+def run_federated(iterative_process_builder: Callable[
+    ..., tff.templates.IterativeProcess],
+                  client_epochs_per_round: int,
+                  client_batch_size: int,
+                  clients_per_round: int,
+                  max_elements_per_user: int,
+                  total_rounds: int = 3000,
+                  vocab_size: int = 10000,
+                  num_oov_buckets: int = 1,
+                  sequence_length: int = 20,
+                  num_validation_examples: int = 10000,
+                  dim_embed: int = 96,
+                  dim_model: int = 512,
+                  dim_hidden: int = 2048,
+                  num_heads: int = 8,
+                  num_layers: int = 1,
+                  max_position_encoding: int = 1000,
+                  dropout: float = 0.1,
+                  client_datasets_random_seed: Optional[int] = None,
+                  experiment_name: str = 'federated_stackoverflow',
+                  root_output_dir: str = '/tmp/fedopt_guide',
+                  max_val_test_batches: Optional[int] = None,
+                  **kwargs) -> None:
   """Configures training for Stack Overflow next-word prediction.
 
   This method will load and pre-process dataset and construct a model used for
@@ -129,9 +128,9 @@ def run_federated(
       transformer_models.create_transformer_lm,
       vocab_size=vocab_size,
       num_oov_buckets=num_oov_buckets,
-      d_embed=dim_embed,
-      d_model=dim_model,
-      d_hidden=dim_hidden,
+      dim_embed=dim_embed,
+      dim_model=dim_model,
+      dim_hidden=dim_hidden,
       num_heads=num_heads,
       num_layers=num_layers,
       max_position_encoding=max_position_encoding,
@@ -213,21 +212,15 @@ def run_federated(
 
   training_process.get_model_weights = iterative_process.get_model_weights
 
-  evaluate_fn = training_utils.build_centralized_evaluate_fn(
-      model_builder=model_builder,
-      eval_dataset=validation_dataset,
-      loss_builder=loss_builder,
-      metrics_builder=metrics_builder)
+  evaluate_fn = tff.learning.build_federated_evaluation(tff_model_fn)
 
-  validation_fn = lambda model_weights, round_num: evaluate_fn(model_weights)
+  def validation_fn(model_weights, round_num):
+    del round_num
+    return evaluate_fn(model_weights, [validation_dataset])
 
-  test_fn = training_utils.build_centralized_evaluate_fn(
-      model_builder=model_builder,
-      # Use both val and test for symmetry with other experiments, which
-      # evaluate on the entire test set.
-      eval_dataset=validation_dataset.concatenate(test_dataset),
-      loss_builder=loss_builder,
-      metrics_builder=metrics_builder)
+  def test_fn(model_weights):
+    return evaluate_fn(model_weights,
+                       [validation_dataset.concatenate(test_dataset)])
 
   logging.info('Training model:')
   logging.info(model_builder().summary())
