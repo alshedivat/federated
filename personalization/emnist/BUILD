@@ -12,6 +12,7 @@ py_library(
         "//optimization/shared:training_specs",
         "//personalization/shared:evaluation",
         "//personalization/shared:eval_specs",
+        "//personalization/shared:training_specs",
         "//personalization/shared:utils",
         "//personalization/shared/p13n_strategies:finetuning",
         "//utils/datasets:emnist_dataset",

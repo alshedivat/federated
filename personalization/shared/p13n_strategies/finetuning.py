@@ -13,7 +13,6 @@
 # limitations under the License.
 """A simple fine-tuning personalization strategy."""
 
-import collections
 from typing import Any, Callable, Dict, Optional
 
 import tensorflow as tf
@@ -26,6 +25,32 @@ OptimizerFn = Callable[[], tf.keras.optimizers.Optimizer]
 PersonalizeFn = Callable[
     [tff.learning.Model, tf.data.Dataset, tf.data.Dataset, Any],
     Dict[str, tf.Tensor]]
+
+
+@tf.function
+def finetune_fn(model: tff.learning.Model,
+                optimizer: tf.keras.optimizers.Optimizer,
+                dataset: tf.data.Dataset) -> tf.Tensor:
+  """Runs the finetuning process of `model` on `dataset` using `optimizer`.
+
+  Args:
+    model: A `tff.learning.Model`.
+    optimizer: A `tf.keras.optimizers.Optimizer` instance.
+    dataset: A batched `tf.data.Dataset` used for finetuning.
+
+  Returns:
+    A `tf.Tensor` that contains the number of examples seen during finetuning.
+  """
+  num_train_examples = 0
+  for batch in dataset:
+    with tf.GradientTape() as tape:
+      output = model.forward_pass(batch)
+    grads = tape.gradient(output.loss, model.trainable_variables)
+    optimizer.apply_gradients(
+      zip(tf.nest.flatten(grads),
+          tf.nest.flatten(model.trainable_variables)))
+    num_train_examples += output.num_examples
+  return num_train_examples
 
 
 def build_personalize_fn(optimizer_fn: OptimizerFn) -> PersonalizeFn:
@@ -65,16 +90,8 @@ def build_personalize_fn(optimizer_fn: OptimizerFn) -> PersonalizeFn:
     """
     del context  # Fine-tuning strategy does not use extra context.
 
-    # Fine-tune the model on train_data.
-    num_train_examples = 0
-    for batch in train_data:
-      with tf.GradientTape() as tape:
-        output = model.forward_pass(batch)
-      grads = tape.gradient(output.loss, model.trainable_variables)
-      optimizer.apply_gradients(
-          zip(tf.nest.flatten(grads),
-              tf.nest.flatten(model.trainable_variables)))
-      num_train_examples += output.num_examples
+    # Fine-tune the model.
+    num_train_examples = finetune_fn(model, optimizer, train_data)
 
     # Evaluate the model.
     metrics_dict = evaluation.evaluate_fn(model, test_data)

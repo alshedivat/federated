@@ -9,3 +9,13 @@ py_library(
     srcs = ["finetuning.py"],
     srcs_version = "PY3",
 )
+
+py_library(
+    name = "maml",
+    srcs = ["maml.py"],
+    srcs_version = "PY3",
+    deps = [
+        "//personalization/shared/p13n_strategies:finetuning",
+        "//posterior_averaging/shared:fed_pa_schedule",
+    ],
+)

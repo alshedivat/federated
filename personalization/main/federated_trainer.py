@@ -14,6 +14,7 @@
 """Runs federated training on various p13n tasks."""
 
 import collections
+import functools
 import os.path
 from typing import Callable
 
@@ -25,12 +26,13 @@ import tensorflow_federated as tff
 from optimization.cifar100 import federated_cifar100
 from optimization.shakespeare import federated_shakespeare
 from optimization.shared import optimizer_utils
-from optimization.shared import training_specs
 from optimization.stackoverflow import federated_stackoverflow
 from optimization.stackoverflow_lr import federated_stackoverflow_lr
 from personalization.emnist import federated_emnist
 from personalization.shared import eval_specs
+from personalization.shared import training_specs
 from personalization.shared import training
+from personalization.shared.p13n_strategies import maml
 from posterior_averaging.shared import fed_pa_schedule
 from utils import training_loop
 from utils import utils_impl
@@ -51,13 +53,19 @@ with utils_impl.record_hparam_flags() as optimizer_flags:
 
 with utils_impl.record_hparam_flags() as shared_flags:
   # Federated training hyperparameters.
-  flags.DEFINE_integer('client_epochs_per_round', 1,
+  flags.DEFINE_integer('client_train_epochs_per_round', 1,
                        'Number of epochs in the client to take per round.')
+  flags.DEFINE_integer('client_train_steps_per_round', -1,
+                       'Number of steps in the client to take per round.')
   flags.DEFINE_integer('client_batch_size', 20, 'Batch size on the clients.')
   flags.DEFINE_integer('clients_per_round', 10,
                        'How many clients to sample per round.')
-  flags.DEFINE_integer('client_datasets_random_seed', 1,
-                       'Random seed for client sampling.')
+  flags.DEFINE_integer('client_train_test_split_random_seed', 42,
+                       'Random seed for splitting clients into subsets.')
+  flags.DEFINE_integer('client_datasets_random_seed_train', 1,
+                       'Random seed for client sampling at training time.')
+  flags.DEFINE_integer('client_datasets_random_seed_eval', 2,
+                       'Random seed for client sampling at eval time.')
 
   # Training loop configuration.
   flags.DEFINE_string(
@@ -75,15 +83,26 @@ with utils_impl.record_hparam_flags() as shared_flags:
 
 with utils_impl.record_hparam_flags() as p13n_flags:
   # Personalization hyperparameters.
-  flags.DEFINE_enum('p13n_strategy', 'finetuning',
+  flags.DEFINE_enum('train_strategy', 'standard',
+                    ['standard', 'maml'],
+                    'The name of the training strategy:\n'
+                    '  - standard: uses standard training of the global model, '
+                    '  - maml: uses first-order MAML training strategy.')
+  flags.DEFINE_enum('eval_strategy', 'finetuning',
                     ['finetuning'],
                     'The name of the personalization strategy.')
   flags.DEFINE_integer('clients_per_eval', 100,
                        'Number of clients that participate in p13n eval.')
 
   # Fine-tuning the global model.
-  flags.DEFINE_integer('finetune_epochs', 1,
-                       'The number of epochs used in fine-tuning.')
+  flags.DEFINE_integer('finetune_train_epochs', -1,
+                       'The number of epochs used in fine-tuning at training.')
+  flags.DEFINE_integer('finetune_train_steps', 1,
+                       'The number of steps used in fine-tuning at training.')
+  flags.DEFINE_integer('finetune_eval_epochs', 1,
+                       'The number of epochs used in fine-tuning at eval.')
+  flags.DEFINE_integer('finetune_eval_steps', -1,
+                       'The number of steps used in fine-tuning at eval.')
   flags.DEFINE_integer('finetune_batch_size', 20,
                        'The batch size used in fine-tuning.')
 
@@ -174,6 +193,9 @@ TASK_FLAGS = collections.OrderedDict(
     stackoverflow_nwp=so_nwp_flags,
     stackoverflow_lr=so_lr_flags)
 
+# Type aliases.
+ModelFn = Callable[[], tff.learning.Model]
+
 
 def _write_hparam_flags():
   """Creates an ordered dictionary of hyperparameter flags and writes to CSV."""
@@ -219,8 +241,7 @@ def main(argv):
     name=FLAGS.client_update_delta_scheme, rho=FLAGS.client_shrinkage_rho)
 
   def iterative_process_builder(
-      model_fn: Callable[[],
-                         tff.learning.Model]) -> tff.templates.IterativeProcess:
+      model_fn: ModelFn) -> tff.templates.IterativeProcess:
     """Creates an iterative process using a given TFF `model_fn`.
 
     Args:
@@ -236,21 +257,31 @@ def main(argv):
     else:
       client_weight_fn = None
 
-    if FLAGS.p13n_strategy == 'finetuning':
-      # When p13n strategy is finetuning, at training time we don not
-      # distinguish between train and test subsets (cf. Reptile).
+    if FLAGS.train_strategy == 'standard':
+      create_client_single_data_pass_fn = (
+          fed_pa_schedule.create_client_single_data_pass_fn)
+      # The standard training strategy does not distinguish between train and
+      # test subsets of the local dataset, hence we merge them (cf. Reptile).
       def client_dataset_fn(client_dataset_dict):
-        # Explicit placement on the CPU avoids TF issue #34112:
+        # Explicit placement on the CPU avoids a known TF issue:
         # https://github.com/tensorflow/tensorflow/issues/34112.
         with tf.device('/CPU:0'):
           return client_dataset_dict.test_data.concatenate(
               client_dataset_dict.train_data)
-    else:
+    elif FLAGS.train_strategy == 'maml':
+      create_client_single_data_pass_fn = functools.partial(
+          maml.create_client_single_data_pass_fn,
+          model_fn=model_fn,
+          finetune_optimizer_fn=finetune_optimizer_fn)
       client_dataset_fn = None
+    else:
+      raise ValueError(
+          f'Unknown training strategy: {FLAGS.p13n_train_strategy}')
 
     return training.build_fed_training_process(
         model_fn=model_fn,
-        client_update_epochs=FLAGS.client_epochs_per_round,
+        create_client_single_data_pass_fn=create_client_single_data_pass_fn,
+        client_update_epochs=FLAGS.client_train_epochs_per_round,
         client_optimizer_fn=client_optimizer_fn,
         client_lr=client_lr_schedule,
         server_optimizer_fn=server_optimizer_fn,
@@ -263,19 +294,26 @@ def main(argv):
 
   task_spec = training_specs.TaskSpec(
       iterative_process_builder=iterative_process_builder,
+      clients_per_round=FLAGS.clients_per_round,
       # Since the number of epochs each client makes every round is handled
       # by the logic in client update functions, here we set it to 1.
-      client_epochs_per_round=1,
-      client_batch_size=FLAGS.client_batch_size,
-      clients_per_round=FLAGS.clients_per_round,
-      client_datasets_random_seed=FLAGS.client_datasets_random_seed)
+      client_outer_epochs_per_round=1,
+      client_outer_steps_per_round=FLAGS.client_train_steps_per_round,
+      client_outer_batch_size=FLAGS.client_batch_size,
+      client_inner_batch_size=FLAGS.finetune_batch_size,
+      client_inner_epochs_per_round=FLAGS.finetune_train_epochs,
+      client_inner_steps_per_round=FLAGS.finetune_train_steps,
+      client_datasets_random_seed=FLAGS.client_datasets_random_seed_train)
 
   eval_spec = eval_specs.EvalSpec(
       clients_per_eval=FLAGS.clients_per_eval,
+      client_outer_batch_size=FLAGS.client_batch_size,
+      client_inner_batch_size=FLAGS.finetune_batch_size,
+      client_inner_epochs=FLAGS.finetune_eval_epochs,
+      client_inner_steps=FLAGS.finetune_eval_steps,
       finetune_optimizer_fn=finetune_optimizer_fn,
-      finetune_batch_size=FLAGS.finetune_batch_size,
-      finetune_epochs=FLAGS.finetune_epochs,
-      eval_random_seed=FLAGS.client_datasets_random_seed)
+      eval_strategy_name=FLAGS.eval_strategy,
+      client_datasets_random_seed = FLAGS.client_datasets_random_seed_eval)
 
   if FLAGS.task == 'cifar100':
     raise NotImplementedError(
@@ -286,7 +324,10 @@ def main(argv):
     #     distort_train_images=FLAGS.cifar100_distort_train_images)
   elif FLAGS.task == 'emnist_cr':
     runner_spec = federated_emnist.configure_training(
-        task_spec, eval_spec, model=FLAGS.emnist_cr_model)
+        task_spec=task_spec,
+        eval_spec=eval_spec,
+        model=FLAGS.emnist_cr_model,
+        seed=FLAGS.client_train_test_split_random_seed)
   elif FLAGS.task == 'shakespeare':
     raise NotImplementedError(
         "Personalized Shakespeare task is not available yet.")

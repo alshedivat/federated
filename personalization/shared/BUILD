@@ -26,6 +26,12 @@ py_library(
 )
 
 py_library(
+    name = "training_specs",
+    srcs = ["training_specs.py"],
+    srcs_version = "PY3",
+)
+
+py_library(
     name = "utils",
     srcs = ["utils.py"],
     srcs_version = "PY3",

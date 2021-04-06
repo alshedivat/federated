@@ -22,7 +22,7 @@ from posterior_averaging.shared.fed_pa_schedule import _initialize_optimizer_var
 from posterior_averaging.shared.fed_pa_schedule import build_federated_mean_masked
 from posterior_averaging.shared.fed_pa_schedule import build_server_init_fn
 from posterior_averaging.shared.fed_pa_schedule import client_update
-from posterior_averaging.shared.fed_pa_schedule import create_client_single_data_pass_fn
+from posterior_averaging.shared.fed_pa_schedule import DataPassOutput
 from posterior_averaging.shared.fed_pa_schedule import server_update
 
 # Import type aliases.
@@ -37,11 +37,18 @@ from posterior_averaging.shared.fed_pa_schedule import (
 
 # Define additional type aliases.
 ClientDatasetFn = Callable[[Dict[str, tf.data.Dataset]], Any]
+ClientSingleDataPassFn = Callable[
+    [tff.learning.Model,
+     Dict[str, tf.data.Dataset],
+     tf.keras.optimizers.Optimizer],
+    DataPassOutput]
+CreateClientSingleDataPassFn = Callable[..., ClientSingleDataPassFn]
 
 
 def build_fed_training_process(
     model_fn: ModelBuilder,
     client_update_epochs: int,
+    create_client_single_data_pass_fn: CreateClientSingleDataPassFn,
     client_mixedin_schedule_fn: ClientMixedinScheduleFn,
     client_update_delta_fn: ClientUpdateDeltaFn,
     client_optimizer_fn: OptimizerBuilder,
@@ -58,6 +65,8 @@ def build_fed_training_process(
     model_fn: A no-arg function that returns a `tff.learning.Model`.
     client_update_epochs: An inteter that represents the number of local
       epochs to run on the clients.
+    create_client_single_data_pass_fn: A function that returns a single data
+      pass function used to compute loss and updated model parameters locally.
     client_mixedin_schedule_fn: A function that returns a client mixed in check
       function for given round; the latter determines whether the client has
       mixed-in based on the outputs of the previous two epochs; if mixed-in,the

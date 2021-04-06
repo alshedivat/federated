@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Configuration classes for creating and running federated p13n tasks."""
+"""Configuration classes for creating and running federated p13n evaluation."""
 
 from typing import Any, Callable, Dict, List, Optional
 
@@ -36,24 +36,36 @@ class EvalSpec(object):
   Attributes:
     clients_per_eval: An integer representing the number of clients
       participating in each eval.
-    finetune_batch_size: An integer representing the fine-tuning batch size.
-    finetune_epochs: An integer representing the number of fine-tuning epochs.
+    client_outer_batch_size: An integer representing the outer batch size.
+    client_inner_batch_size: An integer representing the inner batch size.
+    client_inner_epochs: An integer representing the number of inner epochs.
+    client_inner_steps: An integer representing the number of inner steps.
     finetune_optimizer_rn: A callable that returns fine-tuning optimizer.
-    eval_random_seed: An optional int used to seed which clients are
-      sampled each round. If `None`, no seed is used.
+    eval_strategy_name: A string that represents the eval strategy name.
+    client_datasets_random_seed: An optional int used to seed which clients are
+      sampled at each eval. If `None`, no seed is used.
   """
   clients_per_eval: int = attr.ib(
-    validator=[attr.validators.instance_of(int), _check_positive],
-    converter=int)
-  finetune_batch_size: int = attr.ib(
-    validator=[attr.validators.instance_of(int), _check_positive],
-    converter=int)
-  finetune_epochs: int = attr.ib(
-    validator=[attr.validators.instance_of(int), _check_positive],
-    converter=int)
+      validator=[attr.validators.instance_of(int), _check_positive],
+      converter=int)
+  client_outer_batch_size: int = attr.ib(
+      validator=[attr.validators.instance_of(int), _check_positive],
+      converter=int)
+  client_inner_batch_size: int = attr.ib(
+      validator=[attr.validators.instance_of(int), _check_positive],
+      converter=int)
+  client_inner_epochs: int = attr.ib(
+      validator=attr.validators.instance_of(int),
+      converter=int)
+  client_inner_steps: int = attr.ib(
+      validator=attr.validators.instance_of(int),
+      converter=int)
   finetune_optimizer_fn: Callable[..., tf.keras.optimizers.Optimizer] = attr.ib(
-    validator=attr.validators.is_callable())
-  eval_random_seed: Optional[int] = attr.ib(
+      validator=attr.validators.is_callable())
+  eval_strategy_name: str = attr.ib(
+      validator=attr.validators.instance_of(str),
+      converter=str)
+  client_datasets_random_seed: Optional[int] = attr.ib(
     default=None,
     validator=attr.validators.optional(attr.validators.instance_of(int)),
     converter=attr.converters.optional(int))

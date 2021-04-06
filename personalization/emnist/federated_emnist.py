@@ -15,14 +15,15 @@
 
 import collections
 import functools
+from typing import Optional
 
 import numpy as np
 import tensorflow as tf
 import tensorflow_federated as tff
 
-from optimization.shared import training_specs
 from personalization.shared import evaluation
 from personalization.shared import eval_specs
+from personalization.shared import training_specs
 from personalization.shared import utils
 from personalization.shared.p13n_strategies import finetuning
 from utils.datasets import emnist_dataset
@@ -33,7 +34,8 @@ EMNIST_MODELS = ['cnn', '2nn']
 
 def configure_training(task_spec: training_specs.TaskSpec,
                        eval_spec: eval_specs.EvalSpec,
-                       model: str = 'cnn') -> training_specs.RunnerSpec:
+                       model: str = 'cnn',
+                       seed: Optional[int] = None) -> training_specs.RunnerSpec:
   """Configures training for the EMNIST character recognition task.
 
   This method will load and pre-process datasets and construct a model used for
@@ -46,6 +48,8 @@ def configure_training(task_spec: training_specs.TaskSpec,
     model: A string specifying the model used for character recognition. Can be
       one of `cnn` and `2nn`, corresponding to a CNN model and a densely
       connected 2-layer model (respectively).
+    seed: An optional int used to seed how to split clients into train and test.
+      If `None`, no seed is used.
 
   Returns:
     A `RunnerSpec` containing attributes used for running the newly created
@@ -56,13 +60,17 @@ def configure_training(task_spec: training_specs.TaskSpec,
   (client_ids_train, client_ids_test,
    build_train_dataset_from_client_id, build_eval_dataset_from_client_id) = (
       emnist_dataset.get_federated_p13n_datasets(
-          train_client_batch_size=task_spec.client_batch_size,
-          test_client_batch_size=task_spec.client_batch_size,
-          train_client_epochs_per_round=task_spec.client_epochs_per_round,
-          finetune_client_epochs=eval_spec.finetune_epochs,
-          finetune_client_batch_size=eval_spec.finetune_batch_size,
+          train_outer_batch_size=task_spec.client_outer_batch_size,
+          train_outer_epochs=task_spec.client_outer_epochs_per_round,
+          train_inner_batch_size=task_spec.client_inner_batch_size,
+          train_inner_epochs=task_spec.client_inner_epochs_per_round,
+          train_inner_steps=task_spec.client_inner_steps_per_round,
+          eval_outer_batch_size=eval_spec.client_outer_batch_size,
+          eval_inner_batch_size=eval_spec.client_inner_batch_size,
+          eval_inner_epochs=eval_spec.client_inner_epochs,
+          eval_inner_steps=eval_spec.client_inner_steps,
           emnist_task=emnist_task,
-          seed=eval_spec.eval_random_seed))
+          seed=seed))
 
   input_spec = (
       build_train_dataset_from_client_id.
@@ -97,7 +105,7 @@ def configure_training(task_spec: training_specs.TaskSpec,
 
   # Create a dictionary of personalization strategies.
   personalize_fn_dict = collections.OrderedDict()
-  personalize_fn_dict['finetuning'] = functools.partial(
+  personalize_fn_dict[eval_spec.eval_strategy_name] = functools.partial(
       finetuning.build_personalize_fn,
       optimizer_fn=eval_spec.finetune_optimizer_fn)
 
@@ -114,20 +122,20 @@ def configure_training(task_spec: training_specs.TaskSpec,
 
   # Define client sampling strategy at training time.
   _train_client_ids_fn = tff.simulation.build_uniform_sampling_fn(
-    client_ids_train,
-    size=task_spec.clients_per_round,
-    replace=False,
-    random_seed=task_spec.client_datasets_random_seed)
+      client_ids_train,
+      size=task_spec.clients_per_round,
+      replace=False,
+      random_seed=task_spec.client_datasets_random_seed)
   # We convert the output to a list (instead of an np.ndarray) so that it can
   # be used as input to the iterative process.
   train_client_ids_fn = lambda x: list(_train_client_ids_fn(x))
 
   # Define client sampling strategy at test time.
   _test_client_ids_fn = tff.simulation.build_uniform_sampling_fn(
-    client_ids_test,
-    size=eval_spec.clients_per_eval,
-    replace=False,
-    random_seed=eval_spec.eval_random_seed)
+      client_ids_test,
+      size=eval_spec.clients_per_eval,
+      replace=False,
+      random_seed=eval_spec.client_datasets_random_seed)
   # We convert the output to a list (instead of an np.ndarray) so that it can
   # be used as input to the iterative process.
   test_client_ids_fn = lambda x: list(_test_client_ids_fn(x))
