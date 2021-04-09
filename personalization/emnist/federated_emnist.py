@@ -90,14 +90,27 @@ def configure_training(task_spec: training_specs.TaskSpec,
   loss_builder = tf.keras.losses.SparseCategoricalCrossentropy
   metrics_builder = lambda: [tf.keras.metrics.SparseCategoricalAccuracy()]
 
-  def tff_model_fn() -> tff.learning.Model:
+  def train_model_fn() -> tff.learning.Model:
     return tff.learning.from_keras_model(
         keras_model=model_builder(),
         input_spec=input_spec,
         loss=loss_builder(),
         metrics=metrics_builder())
 
-  iterative_process = task_spec.iterative_process_builder(tff_model_fn)
+  def eval_model_fn() -> tff.learning.Model:
+    keras_model = model_builder()
+    # Add L2 regularization to the eval model for fine-tuning, if necessary.
+    if eval_spec.finetune_l2_regularizer > 0:
+      keras_model.add_loss([
+          eval_spec.finetune_l2_regularizer * tf.reduce_sum(v ** 2)
+          for v in keras_model.trainable_variables])
+    return tff.learning.from_keras_model(
+      keras_model=model_builder(),
+      input_spec=input_spec,
+      loss=loss_builder(),
+      metrics=metrics_builder())
+
+  iterative_process = task_spec.iterative_process_builder(train_model_fn)
   with utils.result_type_is_sequence_hack(build_train_dataset_from_client_id):
     training_process = tff.simulation.compose_dataset_computation_with_iterative_process(
         build_train_dataset_from_client_id, iterative_process)
@@ -113,7 +126,7 @@ def configure_training(task_spec: training_specs.TaskSpec,
   # Here `p13n_eval` is a `tff.Computation` with the following type signature:
   # <model_weights@SERVER, datasets@CLIENTS> -> personalization_metrics@SERVER.
   evaluate_fn = tff.learning.build_personalization_eval(
-      model_fn=tff_model_fn,
+      model_fn=eval_model_fn,
       personalize_fn_dict=personalize_fn_dict,
       baseline_evaluate_fn=evaluation.evaluate_fn)
   with utils.result_type_is_sequence_hack(build_eval_dataset_from_client_id):

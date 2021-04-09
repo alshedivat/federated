@@ -65,6 +65,10 @@ class EvalSpec(object):
   eval_strategy_name: str = attr.ib(
       validator=attr.validators.instance_of(str),
       converter=str)
+  finetune_l2_regularizer: Optional[float] = attr.ib(
+    default=0.,
+    validator=attr.validators.instance_of(float),
+    converter=float)
   client_datasets_random_seed: Optional[int] = attr.ib(
     default=None,
     validator=attr.validators.optional(attr.validators.instance_of(int)),

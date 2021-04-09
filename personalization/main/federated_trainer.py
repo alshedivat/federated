@@ -105,6 +105,8 @@ with utils_impl.record_hparam_flags() as p13n_flags:
                        'The number of steps used in fine-tuning at eval.')
   flags.DEFINE_integer('finetune_batch_size', 20,
                        'The batch size used in fine-tuning.')
+  flags.DEFINE_float('finetune_l2_regularizer', 0.0,
+                     'The L2 regularization used at finetuning time.')
 
 with utils_impl.record_hparam_flags() as fed_pa_flags:
   # FedPA hyperparameters.
@@ -313,7 +315,8 @@ def main(argv):
       client_inner_steps=FLAGS.finetune_eval_steps,
       finetune_optimizer_fn=finetune_optimizer_fn,
       eval_strategy_name=FLAGS.eval_strategy,
-      client_datasets_random_seed = FLAGS.client_datasets_random_seed_eval)
+      finetune_l2_regularizer=FLAGS.finetune_l2_regularizer,
+      client_datasets_random_seed=FLAGS.client_datasets_random_seed_eval)
 
   if FLAGS.task == 'cifar100':
     raise NotImplementedError(
