@@ -25,7 +25,7 @@ tff.learning.personalization_eval._remove_batch_dim = lambda x: x
 
 @tf.function
 def evaluate_fn(model: tff.learning.Model,
-                dataset: tf.data.Dataset) -> Dict[str, tf.Tensor]:
+                dataset_iterator: tf.data.Iterator) -> Dict[str, tf.Tensor]:
   """Evaluates a model on the given dataset.
 
   The returned metrics include those given by `model.report_local_outputs`.
@@ -35,7 +35,7 @@ def evaluate_fn(model: tff.learning.Model,
 
   Args:
     model: A `tff.learning.Model` created by `tff.learning.from_keras_model`.
-    dataset: A batched `tf.data.Dataset`.
+    dataset_iterator: A `tf.data.Iterator` over data batches.
 
   Returns:
     An `OrderedDict` of metric names to scalar `tf.Tensor`s.
@@ -53,7 +53,7 @@ def evaluate_fn(model: tff.learning.Model,
 
   # Compute forward pass over the data.
   num_test_examples = 0
-  for batch in dataset:
+  for batch in dataset_iterator:
     output = model.forward_pass(batch, training=False)
     num_test_examples += output.num_examples
 

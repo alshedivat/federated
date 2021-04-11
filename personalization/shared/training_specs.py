@@ -59,14 +59,8 @@ class TaskSpec(object):
     client_batch_size: An integer representing the batch size used on clients.
     client_epochs_per_round: An integer representing the number of epochs of
       training performed per client in each training round.
-    client_steps_per_round: An integer representing the number of steps of
-      training performed per client in each training round.
-    finetune_epochs_per_round: An integer representing the number of fine-tuning
-      epochs that clients run in the inner loop at training time. If negative,
-      this parameter is ignored and the fine-tuning steps are used instead.
-    finetune_steps_per_round: An integer representing the number of fine-tuning
-      steps that clients run in the inner loop at training time. If negative,
-      this parameter is ignored and the fine-tuning epochs are used instead.
+    client_max_batches_per_round: An integer representing the limit on the
+      number of training batches per client in each training round.
     client_datasets_random_seed: An optional int used to seed which clients are
       sampled at each round. If `None`, no seed is used.
   """
@@ -75,24 +69,15 @@ class TaskSpec(object):
   clients_per_round: int = attr.ib(
       validator=[attr.validators.instance_of(int), _check_positive],
       converter=int)
-  client_outer_batch_size: int = attr.ib(
+  client_batch_size: int = attr.ib(
       validator=[attr.validators.instance_of(int), _check_positive],
       converter=int)
-  client_outer_epochs_per_round: int = attr.ib(
+  client_epochs_per_round: int = attr.ib(
       validator=attr.validators.instance_of(int),
       converter=int)
-  client_outer_steps_per_round: int = attr.ib(
+  client_max_batches_per_round: int = attr.ib(
     validator=attr.validators.instance_of(int),
     converter=int)
-  client_inner_batch_size: int = attr.ib(
-    validator=[attr.validators.instance_of(int), _check_positive],
-    converter=int)
-  client_inner_epochs_per_round: int = attr.ib(
-      validator=attr.validators.instance_of(int),
-      converter=int)
-  client_inner_steps_per_round: int = attr.ib(
-      validator=attr.validators.instance_of(int),
-      converter=int)
   client_datasets_random_seed: Optional[int] = attr.ib(
       default=None,
       validator=attr.validators.optional(attr.validators.instance_of(int)),

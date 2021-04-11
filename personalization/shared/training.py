@@ -115,10 +115,7 @@ def build_fed_training_process(
   model_weights_type = server_state_type.model
   round_num_type = server_state_type.round_num
 
-  # The dataset is actually a struct of train and test datasets.
-  tf_dataset_type = tff.StructType([
-      ('train_data', tff.SequenceType(dummy_model.input_spec)),
-      ('test_data', tff.SequenceType(dummy_model.input_spec))])
+  tf_dataset_type = tff.SequenceType(dummy_model.input_spec)
 
   @tff.tf_computation(tf_dataset_type, model_weights_type, round_num_type)
   def client_update_fn(tf_dataset, initial_model_weights, round_num):

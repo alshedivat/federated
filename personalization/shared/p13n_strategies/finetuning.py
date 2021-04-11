@@ -30,30 +30,38 @@ PersonalizeFn = Callable[
 @tf.function
 def finetune_fn(model: tff.learning.Model,
                 optimizer: tf.keras.optimizers.Optimizer,
-                dataset: tf.data.Dataset) -> tf.Tensor:
+                dataset_iterator: tf.data.Iterator,
+                prox_coeff: float = 0.0) -> tf.Tensor:
   """Runs the finetuning process of `model` on `dataset` using `optimizer`.
 
   Args:
     model: A `tff.learning.Model`.
     optimizer: A `tf.keras.optimizers.Optimizer` instance.
-    dataset: A batched `tf.data.Dataset` used for finetuning.
+    dataset_iterator: A an iterator over `tf.data.Dataset` batches.
+    prox_coeff: A float representing proximal regularization coefficient.
 
   Returns:
-    A `tf.Tensor` that contains the number of examples seen during finetuning.
+    A `tf.Tensor` that contains the number of examples seen during fine tuning.
   """
+  init_trainable_variables = tf.nest.map_structure(lambda x: tf.identity(x),
+                                                   model.trainable_variables)
   num_train_examples = 0
-  for batch in dataset:
+  for batch in dataset_iterator:
     with tf.GradientTape() as tape:
       output = model.forward_pass(batch)
-    grads = tape.gradient(output.loss, model.trainable_variables)
-    optimizer.apply_gradients(
-      zip(tf.nest.flatten(grads),
-          tf.nest.flatten(model.trainable_variables)))
+      loss = output.loss
+      if prox_coeff > 0:
+        loss += prox_coeff * sum(tf.nest.map_structure(
+            lambda x, y: 0.5 * tf.reduce_sum(tf.math.square(x - y)),
+            model.trainable_variables, init_trainable_variables))
+    grads = tape.gradient(loss, model.trainable_variables)
+    optimizer.apply_gradients(zip(grads, model.trainable_variables))
     num_train_examples += output.num_examples
   return num_train_examples
 
 
-def build_personalize_fn(optimizer_fn: OptimizerFn) -> PersonalizeFn:
+def build_personalize_fn(optimizer_fn: OptimizerFn,
+                         prox_coeff: float = 0.0) -> PersonalizeFn:
   """Builds a `tf.function` that represents a personalization strategy.
 
   The returned `tf.function` fine-tunes a client model on the `train_data`
@@ -62,6 +70,7 @@ def build_personalize_fn(optimizer_fn: OptimizerFn) -> PersonalizeFn:
   Args:
     optimizer_fn: A no-argument function that returns a
       `tf.keras.optimizers.Optimizer`.
+    prox_coeff: A float representing proximal regularization coefficient.
 
   Returns:
     A `tf.function` that trains a personalized model, evaluates the model at
@@ -91,10 +100,14 @@ def build_personalize_fn(optimizer_fn: OptimizerFn) -> PersonalizeFn:
     del context  # Fine-tuning strategy does not use extra context.
 
     # Fine-tune the model.
-    num_train_examples = finetune_fn(model, optimizer, train_data)
+    num_train_examples = finetune_fn(model=model,
+                                     optimizer=optimizer,
+                                     dataset_iterator=iter(train_data),
+                                     prox_coeff=prox_coeff)
 
     # Evaluate the model.
-    metrics_dict = evaluation.evaluate_fn(model, test_data)
+    metrics_dict = evaluation.evaluate_fn(model=model,
+                                          dataset_iterator=iter(test_data))
 
     # Save the training statistics.
     metrics_dict['num_train_examples'] = num_train_examples

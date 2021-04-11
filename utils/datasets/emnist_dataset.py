@@ -228,48 +228,28 @@ def get_centralized_datasets(
 
 
 def get_federated_p13n_datasets(
-    train_outer_batch_size: int = 20,
-    train_outer_epochs: int = 1,
-    train_outer_steps: int = -1,
-    train_inner_batch_size: int = 20,
-    train_inner_epochs: int = -1,
-    train_inner_steps: int = 1,
-    train_shuffle_buffer_size: int = MAX_CLIENT_DATASET_SIZE,
-    eval_outer_batch_size: int = 100,
-    eval_inner_batch_size: int = 20,
-    eval_inner_epochs: int = -1,
-    eval_inner_steps: int = 1,
-    eval_shuffle_buffer_size: int = 1,
+    train_batch_size: int = 20,
+    train_epochs: int = 1,
+    train_max_batches: int = -1,
+    eval_batch_size: int = 20,
+    eval_inner_epochs: int = 1,
+    eval_inner_max_batches: int = -1,
     only_digits: bool = False,
     emnist_task: str = 'digit_recognition',
+    shuffle_buffer_size: int = MAX_CLIENT_DATASET_SIZE,
     seed: Optional[int] = None
 ) -> Tuple[List[str], List[str], tff.Computation, tff.Computation]:
   """Loads and preprocesses federated EMNIST p13n training and testing sets.
 
   Args:
-    train_outer_batch_size: The batch size for training outer loop.
-    train_outer_epochs: The number of epochs each train client should
-      iterate in the outer loop.
-    train_outer_steps: The number of steps each train client should
-      iterate in the outer loop.
-    train_inner_batch_size: The batch size for training inner loop.
-    train_inner_epochs: The number of epochs each train client should
-      iterate in the inner loop.
-    train_inner_steps: The number of steps each train client should
-      iterate in the inner loop.
-    train_shuffle_buffer_size: An integer representing the shuffle buffer size
-      (as in `tf.data.Dataset.shuffle`) for each train client's dataset. By
-      default, this is set to the largest dataset size among all clients. If set
-      to some integer less than or equal to 1, no shuffling occurs.
-    eval_outer_batch_size: The batch size for outer loop at evaluation time.
-    eval_inner_batch_size: The batch size for inner loop at evaluation time.
+    train_batch_size: The batch size of the training dataset.
+    train_epochs: The number of epochs to repeat the training dataset.
+    train_max_batches: The number of batches to limit the training dataset to.
+    eval_batch_size: The batch size of the evaluation dataset.
     eval_inner_epochs: An integer representing the number of inner loop epochs
       at evaluation time.
-    eval_inner_steps: An integer representing the number of inner loop epochs
-      at evaluation time.
-    eval_shuffle_buffer_size: An integer representing the shuffle buffer size
-      (as in `tf.data.Dataset.shuffle`) for each test client's dataset. If set
-      to some integer less than or equal to 1, no shuffling occurs.
+    eval_inner_max_batches: An integer representing the limit on the number of
+      batches used in the inner loop.
     only_digits: A boolean representing whether to take the digits-only
       EMNIST-10 (with only 10 labels) or the full EMNIST-62 dataset with digits
       and characters (62 labels). If set to True, we use EMNIST-10, otherwise we
@@ -278,6 +258,10 @@ def get_federated_p13n_datasets(
       one of 'digit_recognition' or 'autoencoder'. If the former, then elements
       are mapped to tuples of the form (pixels, label), if the latter then
       elements are mapped to tuples of the form (pixels, pixels).
+    shuffle_buffer_size: An integer representing the shuffle buffer size
+      (as in `tf.data.Dataset.shuffle`) for each train client's dataset. By
+      default, this is set to the largest dataset size among all clients. If set
+      to some integer less than or equal to 1, no shuffling occurs.
     seed: An optional integer for seeding random splitting of the clients into
       training and test sets.
 
@@ -291,32 +275,25 @@ def get_federated_p13n_datasets(
   client_ids = emnist_train.client_ids
   assert set(client_ids) == set(emnist_test.client_ids)
 
-  train_outer_preprocess_fn = create_preprocess_fn(
-    num_epochs=train_outer_epochs,
-    max_batches=train_outer_steps,
-    batch_size=train_outer_batch_size,
-    shuffle_buffer_size=train_shuffle_buffer_size,
-    emnist_task=emnist_task)
-
-  train_inner_preprocess_fn = create_preprocess_fn(
-    num_epochs=train_inner_epochs,
-    max_batches=train_inner_steps,
-    batch_size=train_inner_batch_size,
-    shuffle_buffer_size=train_shuffle_buffer_size,
-    emnist_task=emnist_task)
-
-  eval_outer_preprocess_fn = create_preprocess_fn(
-    num_epochs=1,  # One epoch is always sufficient for eval.
-    batch_size=eval_outer_batch_size,
-    shuffle_buffer_size=eval_shuffle_buffer_size,
+  train_preprocess_fn = create_preprocess_fn(
+    num_epochs=train_epochs,
+    max_batches=train_max_batches,
+    batch_size=train_batch_size,
+    shuffle_buffer_size=shuffle_buffer_size,
     emnist_task=emnist_task)
 
   eval_inner_preprocess_fn = create_preprocess_fn(
     num_epochs=eval_inner_epochs,
-    max_batches=eval_inner_steps,
-    batch_size=eval_inner_batch_size,
+    max_batches=eval_inner_max_batches,
+    batch_size=eval_batch_size,
     # Note: we still need to shuffle data for fine-tuning at eval time.
-    shuffle_buffer_size=train_shuffle_buffer_size,
+    shuffle_buffer_size=shuffle_buffer_size,
+    emnist_task=emnist_task)
+
+  eval_outer_preprocess_fn = create_preprocess_fn(
+    num_epochs=1,  # One epoch is always sufficient for eval.
+    batch_size=eval_batch_size,
+    shuffle_buffer_size=1,
     emnist_task=emnist_task)
 
   # Split clients into training and test sets.
@@ -327,12 +304,13 @@ def get_federated_p13n_datasets(
 
   @tff.tf_computation(tf.string)
   def build_train_dataset_from_client_id(client_id):
+    # Explicit placement on the CPU avoids a known TF issue:
+    # https://github.com/tensorflow/tensorflow/issues/34112.
+    # with tf.device('/CPU:0'):
     client_dataset_train = emnist_train.dataset_computation(client_id)
     client_dataset_test = emnist_test.dataset_computation(client_id)
-    return collections.OrderedDict([
-      ('train_data', train_inner_preprocess_fn(client_dataset_train)),
-      ('test_data', train_outer_preprocess_fn(client_dataset_test)),
-    ])
+    client_dataset_full = client_dataset_train.concatenate(client_dataset_test)
+    return train_preprocess_fn(client_dataset_full)
 
   @tff.tf_computation(tf.string)
   def build_eval_dataset_from_client_id(client_id):

@@ -42,6 +42,9 @@ _SUPPORTED_TASKS = [
     'stackoverflow_lr'
 ]
 
+gpus = tf.config.list_physical_devices('GPU')
+tf.config.experimental.set_memory_growth(gpus[0], True)
+
 with utils_impl.record_hparam_flags() as optimizer_flags:
   # Defining optimizer flags
   optimizer_utils.define_optimizer_flags('client')
@@ -53,10 +56,10 @@ with utils_impl.record_hparam_flags() as optimizer_flags:
 
 with utils_impl.record_hparam_flags() as shared_flags:
   # Federated training hyperparameters.
-  flags.DEFINE_integer('client_train_epochs_per_round', 1,
-                       'Number of epochs in the client to take per round.')
-  flags.DEFINE_integer('client_train_steps_per_round', -1,
-                       'Number of steps in the client to take per round.')
+  flags.DEFINE_integer('client_epochs_per_round', 1,
+                       'Number of epochs for the client to take per round.')
+  flags.DEFINE_integer('client_max_steps_per_round', -1,
+                       'Max number of steps the client can take per round.')
   flags.DEFINE_integer('client_batch_size', 20, 'Batch size on the clients.')
   flags.DEFINE_integer('clients_per_round', 10,
                        'How many clients to sample per round.')
@@ -95,18 +98,16 @@ with utils_impl.record_hparam_flags() as p13n_flags:
                        'Number of clients that participate in p13n eval.')
 
   # Fine-tuning the global model.
-  flags.DEFINE_integer('finetune_train_epochs', -1,
-                       'The number of epochs used in fine-tuning at training.')
-  flags.DEFINE_integer('finetune_train_steps', 1,
-                       'The number of steps used in fine-tuning at training.')
-  flags.DEFINE_integer('finetune_eval_epochs', 1,
-                       'The number of epochs used in fine-tuning at eval.')
-  flags.DEFINE_integer('finetune_eval_steps', -1,
-                       'The number of steps used in fine-tuning at eval.')
-  flags.DEFINE_integer('finetune_batch_size', 20,
-                       'The batch size used in fine-tuning.')
-  flags.DEFINE_float('finetune_l2_regularizer', 0.0,
-                     'The L2 regularization used at finetuning time.')
+  flags.DEFINE_integer('finetune_epochs', -1,
+                       'The number of epochs used for fine tuning.')
+  flags.DEFINE_integer('finetune_max_steps', 1,
+                       'The max number of steps used for fine tuning.')
+  flags.DEFINE_float('finetune_prox_coeff', 0.0,
+                     'The prox coefficient used at fine tuning time.')
+
+  # MAML.
+  flags.DEFINE_integer('client_maml_outer_steps', 1,
+                       'The number of MAML outer loop steps.')
 
 with utils_impl.record_hparam_flags() as fed_pa_flags:
   # FedPA hyperparameters.
@@ -252,30 +253,16 @@ def main(argv):
     Returns:
       A `tff.templates.IterativeProcess`.
     """
-    if FLAGS.task == 'shakespeare' or FLAGS.task == 'stackoverflow_nwp':
-
-      def client_weight_fn(local_outputs):
-        return tf.cast(tf.squeeze(local_outputs['num_tokens']), tf.float32)
-    else:
-      client_weight_fn = None
-
     if FLAGS.train_strategy == 'standard':
       create_client_single_data_pass_fn = (
           fed_pa_schedule.create_client_single_data_pass_fn)
-      # The standard training strategy does not distinguish between train and
-      # test subsets of the local dataset, hence we merge them (cf. Reptile).
-      def client_dataset_fn(client_dataset_dict):
-        # Explicit placement on the CPU avoids a known TF issue:
-        # https://github.com/tensorflow/tensorflow/issues/34112.
-        with tf.device('/CPU:0'):
-          return client_dataset_dict.test_data.concatenate(
-              client_dataset_dict.train_data)
     elif FLAGS.train_strategy == 'maml':
       create_client_single_data_pass_fn = functools.partial(
           maml.create_client_single_data_pass_fn,
           model_fn=model_fn,
-          finetune_optimizer_fn=finetune_optimizer_fn)
-      client_dataset_fn = None
+          client_steps=FLAGS.client_maml_outer_steps,
+          inner_optimizer_fn=finetune_optimizer_fn,
+          inner_prox_coeff=FLAGS.finetune_prox_coeff)
     else:
       raise ValueError(
           f'Unknown training strategy: {FLAGS.p13n_train_strategy}')
@@ -283,39 +270,33 @@ def main(argv):
     return training.build_fed_training_process(
         model_fn=model_fn,
         create_client_single_data_pass_fn=create_client_single_data_pass_fn,
-        client_update_epochs=FLAGS.client_train_epochs_per_round,
+        client_update_epochs=FLAGS.client_epochs_per_round,
         client_optimizer_fn=client_optimizer_fn,
         client_lr=client_lr_schedule,
         server_optimizer_fn=server_optimizer_fn,
         server_lr=server_lr_schedule,
-        client_dataset_fn=client_dataset_fn,
         client_mixedin_schedule_fn=client_mixedin_schedule_fn,
         client_update_delta_fn=client_update_delta_fn,
-        client_weight_fn=client_weight_fn,
         mask_zeros_in_client_updates=FLAGS.mask_zeros_in_client_updates)
 
   task_spec = training_specs.TaskSpec(
       iterative_process_builder=iterative_process_builder,
       clients_per_round=FLAGS.clients_per_round,
+      client_batch_size=FLAGS.client_batch_size,
       # Since the number of epochs each client makes every round is handled
       # by the logic in client update functions, here we set it to 1.
-      client_outer_epochs_per_round=1,
-      client_outer_steps_per_round=FLAGS.client_train_steps_per_round,
-      client_outer_batch_size=FLAGS.client_batch_size,
-      client_inner_batch_size=FLAGS.finetune_batch_size,
-      client_inner_epochs_per_round=FLAGS.finetune_train_epochs,
-      client_inner_steps_per_round=FLAGS.finetune_train_steps,
+      client_epochs_per_round=1,
+      client_max_batches_per_round=FLAGS.client_max_steps_per_round,
       client_datasets_random_seed=FLAGS.client_datasets_random_seed_train)
 
   eval_spec = eval_specs.EvalSpec(
       clients_per_eval=FLAGS.clients_per_eval,
-      client_outer_batch_size=FLAGS.client_batch_size,
-      client_inner_batch_size=FLAGS.finetune_batch_size,
-      client_inner_epochs=FLAGS.finetune_eval_epochs,
-      client_inner_steps=FLAGS.finetune_eval_steps,
+      client_batch_size=FLAGS.client_batch_size,
+      finetune_epochs=FLAGS.finetune_epochs,
+      finetune_max_batches=FLAGS.finetune_max_steps,
       finetune_optimizer_fn=finetune_optimizer_fn,
       eval_strategy_name=FLAGS.eval_strategy,
-      finetune_l2_regularizer=FLAGS.finetune_l2_regularizer,
+      finetune_prox_coeff=FLAGS.finetune_prox_coeff,
       client_datasets_random_seed=FLAGS.client_datasets_random_seed_eval)
 
   if FLAGS.task == 'cifar100':
