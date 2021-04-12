@@ -55,7 +55,6 @@ def build_fed_training_process(
     client_lr: Union[float, LRScheduleFn] = 0.1,
     server_optimizer_fn: OptimizerBuilder = tf.keras.optimizers.SGD,
     server_lr: Union[float, LRScheduleFn] = 1.0,
-    client_dataset_fn: Optional[ClientDatasetFn] = None,
     client_weight_fn: Optional[ClientWeightFn] = None,
     mask_zeros_in_client_updates: bool = False,
 ) -> tff.templates.IterativeProcess:
@@ -81,8 +80,6 @@ def build_fed_training_process(
       returns a `tf.keras.optimizers.Optimizer` instance.
     server_lr: A scalar learning rate or a function that accepts a float
       `round_num` argument and returns a learning rate.
-    client_dataset_fn: Optional function that preprocesses client dataset.
-      The function must take as input an OrderedDict of datasets.
     client_weight_fn: Optional function that takes the output of
       `model.report_local_outputs` and returns a tensor that provides the weight
       in the federated average of model deltas. If not provided, the default is
@@ -102,9 +99,6 @@ def build_fed_training_process(
   if not callable(server_lr_schedule):
     server_lr_schedule = lambda round_num: server_lr
 
-  if client_dataset_fn is None:
-    client_dataset_fn = lambda x: x
-
   dummy_model = model_fn()
 
   server_init_tf = build_server_init_fn(
@@ -122,8 +116,7 @@ def build_fed_training_process(
     client_lr = client_lr_schedule(round_num)
     client_optimizer = client_optimizer_fn(client_lr)
     client_mixedin_fn = client_mixedin_schedule_fn(round_num)
-    client_single_data_pass_fn = create_client_single_data_pass_fn()
-    tf_dataset = client_dataset_fn(tf_dataset)
+    client_single_data_pass_fn = create_client_single_data_pass_fn(round_num)
     return client_update(
         model=model_fn(),
         dataset=tf_dataset,

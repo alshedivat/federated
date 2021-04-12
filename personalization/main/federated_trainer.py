@@ -106,6 +106,9 @@ with utils_impl.record_hparam_flags() as p13n_flags:
                      'The prox coefficient used at fine tuning time.')
 
   # MAML.
+  flags.DEFINE_enum('client_maml_update_type', 'first-order',
+                    ['first-order', 'implicit'],
+                    'The type of the MAML updates used locally.')
   flags.DEFINE_integer('client_maml_outer_steps', 1,
                        'The number of MAML outer loop steps.')
 
@@ -203,6 +206,8 @@ ModelFn = Callable[[], tff.learning.Model]
 def _write_hparam_flags():
   """Creates an ordered dictionary of hyperparameter flags and writes to CSV."""
   hparam_dict = utils_impl.lookup_flag_values(shared_flags)
+  hparam_dict.update(utils_impl.lookup_flag_values(fed_pa_flags))
+  hparam_dict.update(utils_impl.lookup_flag_values(p13n_flags))
 
   # Update with optimizer flags corresponding to the chosen optimizers.
   opt_flag_dict = utils_impl.lookup_flag_values(optimizer_flags)
@@ -235,6 +240,7 @@ def main(argv):
 
   client_lr_schedule = optimizer_utils.create_lr_schedule_from_flags('client')
   server_lr_schedule = optimizer_utils.create_lr_schedule_from_flags('server')
+  finetune_lr_schedule = optimizer_utils.create_lr_schedule_from_flags('finetune')
 
   client_mixedin_schedule_fn = fed_pa_schedule.create_mixin_check_fn(
     name=FLAGS.client_mixin_check_scheme,
@@ -255,14 +261,16 @@ def main(argv):
     """
     if FLAGS.train_strategy == 'standard':
       create_client_single_data_pass_fn = (
-          fed_pa_schedule.create_client_single_data_pass_fn)
+          lambda round_num: fed_pa_schedule.create_client_single_data_pass_fn())
     elif FLAGS.train_strategy == 'maml':
       create_client_single_data_pass_fn = functools.partial(
           maml.create_client_single_data_pass_fn,
           model_fn=model_fn,
           client_steps=FLAGS.client_maml_outer_steps,
           inner_optimizer_fn=finetune_optimizer_fn,
-          inner_prox_coeff=FLAGS.finetune_prox_coeff)
+          inner_lr_schedule=finetune_lr_schedule,
+          inner_prox_coeff=FLAGS.finetune_prox_coeff,
+          maml_update_type=FLAGS.client_maml_update_type)
     else:
       raise ValueError(
           f'Unknown training strategy: {FLAGS.p13n_train_strategy}')
