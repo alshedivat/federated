@@ -23,6 +23,8 @@ from absl import flags
 import tensorflow as tf
 import tensorflow_federated as tff
 
+import wandb
+
 from optimization.cifar100 import federated_cifar100
 from optimization.shakespeare import federated_shakespeare
 from optimization.shared import optimizer_utils
@@ -241,6 +243,13 @@ def main(argv):
   client_lr_schedule = optimizer_utils.create_lr_schedule_from_flags('client')
   server_lr_schedule = optimizer_utils.create_lr_schedule_from_flags('server')
   finetune_lr_schedule = optimizer_utils.create_lr_schedule_from_flags('finetune')
+
+  # Initialize Weights and Biases.
+  wandb.init(
+    project='fed-p13n',
+    entity='alshedivat',
+    config=FLAGS,
+    sync_tensorboard=True)
 
   client_mixedin_schedule_fn = fed_pa_schedule.create_mixin_check_fn(
     name=FLAGS.client_mixin_check_scheme,
