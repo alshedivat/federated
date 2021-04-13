@@ -35,15 +35,6 @@ class LinearOperatorRegularizedHessian(tf.linalg.LinearOperator):
                tape: tf.GradientTape,
                alpha: float,
                name: str = "LinearOperatorRegularizedHessian"):
-    """Initialize LinearOperatorHessian.
-
-    Args:
-      grads:
-      vars:
-      tape:
-      alpha:
-      name:
-    """
     parameters = dict(alpha=alpha, grads=grads, vars=vars, tape=tape)
 
     self._alpha = alpha
@@ -78,8 +69,9 @@ def apply_implicit_maml_update(vars: Tuple[tf.Variable],
                                tape: tf.GradientTape,
                                optimizer: tf.keras.optimizers.Optimizer,
                                prox_coeff: float,
-                               cg_tol=1e-5,
-                               cg_max_iter=20):
+                               hess_shrinkage: float = 1.0,
+                               cg_tol: float = 1e-5,
+                               cg_max_iter: int = 5):
   """Computes the iMAML update using CG and applies to the model.
 
   The update has the following form: `(I + Hess / prox_coeff)^{-1} grads`,
@@ -96,6 +88,7 @@ def apply_implicit_maml_update(vars: Tuple[tf.Variable],
       respect to model parameters.
     optimizer: An instance of `tf.keras.optimizers.Optimizer`.
     prox_coeff: The prox coefficient used in the inner loop.
+    hess_shrinkage: The shrinkage coefficient applied to the Hessian.
     cg_tol: Conjugate gradient (CG) tolerance coefficient.
     cg_max_iter: The limit on the number of CG iterations.
 
@@ -105,8 +98,9 @@ def apply_implicit_maml_update(vars: Tuple[tf.Variable],
         NeurIPS 2019 (https://arxiv.org/abs/1909.04630)
   """
   # Create a linear operator, initial solution x, and rhs.
+  alpha = prox_coeff * hess_shrinkage
   operator = LinearOperatorRegularizedHessian(
-      grads=grads, vars=vars, tape=tape, alpha=prox_coeff)
+      grads=grads, vars=vars, tape=tape, alpha=alpha)
   x = _to_vec(grads)
   rhs = prox_coeff * x
 

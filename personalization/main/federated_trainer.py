@@ -113,6 +113,9 @@ with utils_impl.record_hparam_flags() as p13n_flags:
                     'The type of the MAML updates used locally.')
   flags.DEFINE_integer('client_maml_outer_steps', 1,
                        'The number of MAML outer loop steps.')
+  flags.DEFINE_integer('client_maml_start_round', 0,
+                       'The round starting which MAML update is used. '
+                       'Until then, FedAvg or FedPA is used.')
 
 with utils_impl.record_hparam_flags() as fed_pa_flags:
   # FedPA hyperparameters.
@@ -279,6 +282,7 @@ def main(argv):
           inner_optimizer_fn=finetune_optimizer_fn,
           inner_lr_schedule=finetune_lr_schedule,
           inner_prox_coeff=FLAGS.finetune_prox_coeff,
+          maml_start_round=FLAGS.client_maml_start_round,
           maml_update_type=FLAGS.client_maml_update_type)
     else:
       raise ValueError(

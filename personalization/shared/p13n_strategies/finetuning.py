@@ -49,11 +49,9 @@ def finetune_fn(model: tff.learning.Model,
   for batch in dataset_iterator:
     with tf.GradientTape() as tape:
       output = model.forward_pass(batch)
-      loss = output.loss
-      if prox_coeff > 0:
-        loss += prox_coeff * sum(tf.nest.map_structure(
-            lambda x, y: 0.5 * tf.reduce_sum(tf.math.square(x - y)),
-            model.trainable_variables, init_trainable_variables))
+      loss = output.loss + prox_coeff * sum(tf.nest.map_structure(
+          lambda x, y: 0.5 * tf.reduce_sum(tf.math.square(x - y)),
+          model.trainable_variables, init_trainable_variables))
     grads = tape.gradient(loss, model.trainable_variables)
     optimizer.apply_gradients(zip(grads, model.trainable_variables))
     num_train_examples += output.num_examples

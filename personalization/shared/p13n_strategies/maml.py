@@ -11,7 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Model-agnostic meta-learning personalization strategy."""
+"""Model-agnostic meta-learning personalization strategy.
+
+References:
+  - Model-agnostic Meta-learning for Fast Adaptation of Deep Networks.
+    Chelsea Finn, Pieter Abbeel, Sergey Levine.
+    ICML 2017 (https://arxiv.org/abs/1703.03400)
+  - Meta-Learning with Implicit Gradients.
+    Aravind Rajeswaran, Chelsea Finn, Sham Kakade, Sergey Levine.
+    NeurIPS 2019 (https://arxiv.org/abs/1909.04630)
+"""
 
 import contextlib
 from typing import Any, Callable, Dict, List, Tuple
@@ -22,7 +31,7 @@ import tensorflow_federated as tff
 from personalization.shared.p13n_strategies.finetuning import finetune_fn
 from personalization.shared.p13n_strategies.maml_utils import apply_first_order_maml_update
 from personalization.shared.p13n_strategies.maml_utils import apply_implicit_maml_update
-from posterior_averaging.shared.fed_pa_schedule import DataPassOutput
+from posterior_averaging.shared import fed_pa_schedule
 
 # Types.
 ModelFn = Callable[[], tff.learning.Model]
@@ -31,6 +40,7 @@ LRSchedule = Callable[[tf.Tensor], tf.Tensor]
 PersonalizeFn = Callable[
     [tff.learning.Model, tf.data.Dataset, tf.data.Dataset, Any],
     Dict[str, tf.Tensor]]
+DataPassOutput = fed_pa_schedule.DataPassOutput
 SingleDataPassFn = Callable[..., DataPassOutput]
 
 
@@ -40,7 +50,9 @@ def create_client_single_data_pass_fn(round_num: int,
                                       inner_optimizer_fn: OptimizerFn,
                                       inner_lr_schedule: LRSchedule,
                                       inner_prox_coeff: float = 0.0,
-                                      maml_update_type: str = "first-order") -> SingleDataPassFn:
+                                      maml_start_round: int = 0,
+                                      maml_update_type: str = "first-order"
+                                      ) -> SingleDataPassFn:
   """Returns a tf.function for taking a single pass over the client data.
 
   Args:
@@ -51,6 +63,9 @@ def create_client_single_data_pass_fn(round_num: int,
     inner_lr_schedule: A function that maps round number to a learning rate,
       which is used by the inner loop optimizer.
     inner_prox_coeff: A prox coefficient to use in the inner loop.
+    maml_start_round: A integer that indicates the round starting which it
+      creates a single data pass function that computes MAML updates. Until
+      then, it returns the standard (FedPA) single data pass function.
     maml_update_type: A string that specifies the type of MAML updates.
   """
   # Create the `optimizer` here instead of inside the `tf.function` below,
@@ -106,10 +121,11 @@ def create_client_single_data_pass_fn(round_num: int,
                             inner_optimizer_weights_reset)
 
   @tf.function
-  def _single_data_pass(model: tff.learning.Model,
-                        dataset: tf.data.Dataset,
-                        client_optimizer: tf.keras.optimizers.Optimizer) -> DataPassOutput:
-    """Makes a single pass over the dataset and updates the model.
+  def _maml_single_data_pass(model: tff.learning.Model,
+                             dataset: tf.data.Dataset,
+                             client_optimizer: tf.keras.optimizers.Optimizer
+                             ) -> DataPassOutput:
+    """Makes a single pass over the dataset and updates the model using MAML.
 
     Notes:
       - Each outer loop step essentially is computed on a randomly sampled data
@@ -209,4 +225,16 @@ def create_client_single_data_pass_fn(round_num: int,
 
     return outputs
 
-  return _single_data_pass
+  _single_data_pass = fed_pa_schedule.create_client_single_data_pass_fn()
+
+  def _single_data_pass_switcher(model: tff.learning.Model,
+                                 dataset: tf.data.Dataset,
+                                 client_optimizer: tf.keras.optimizers.Optimizer
+                                 ) -> DataPassOutput:
+    """Switches between the standard and MAML data pass based on `round_num`."""
+    return tf.cond(
+        round_num < maml_start_round,
+        true_fn=lambda: _single_data_pass(model, dataset, client_optimizer),
+        false_fn=lambda: _maml_single_data_pass(model, dataset, client_optimizer))
+
+  return _single_data_pass_switcher
